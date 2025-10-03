@@ -1,0 +1,123 @@
+-----v1 of stored procedure
+
+CREATE OR REPLACE PROCEDURE SPROC1(csv_array JSONB)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    csv_data JSONB;
+BEGIN
+    FOR csv_data IN SELECT * FROM jsonb_array_elements(csv_array)
+    LOOP
+        RAISE NOTICE 'Processing row: %', csv_data;
+
+        BEGIN
+            INSERT INTO intricon_data
+            SELECT *
+            FROM json_populate_record(NULL::intricon_data, csv_data::json);
+
+            RAISE NOTICE 'Row inserted successfully: %', csv_data->>'_id';
+
+        EXCEPTION WHEN OTHERS THEN
+            RAISE WARNING 'Error inserting row with _id=%: %',
+                csv_data->>'_id', SQLERRM;
+        END;
+
+    END LOOP;
+
+    RAISE NOTICE 'Finished processing all rows.';
+END;
+$$;
+
+---do error handling for already insert rows from csv
+---have error show where the error occured - "row 15, col 8"
+
+-- missing column - NULL? notify the person where the NULL 
+--- what if some rows are empty?
+--- another check - two csv files named the same?
+
+
+---- next steps
+----- create a new version of the SPROC - write code for inserting data to manufactring_csv_uploads
+----manufacturing tab - csv files in table - populate table in front end of all records - on right side that you can select and view
+--- tie this sproc with inventory
+CALL SPROC1(
+  '[{"_id":17,"start_time":"2018-04-30 10:00:00","autotested":true,"Device_Id":456}]'::jsonb
+);
+
+
+SELECT * FROM intricon_data;
+
+
+
+-----v2 SPROC1 10-03-25
+
+---has error handling for already insert rows from csv, and where the error has occured
+---have error show where the error occured - "row 15, col 8"
+
+-- missing column - NULL? notify the person where the NULL 
+--- what if some rows are empty?
+--- another check - two csv files named the same?
+
+
+
+
+CREATE OR REPLACE PROCEDURE SPROC1(csv_array JSONB, csv_filename TEXT, user_email TEXT)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    csv_data JSONB;
+    row_num INT := 0;
+    inserted_count INT := 0;
+    had_error BOOLEAN := FALSE;
+BEGIN
+    -- Prevent duplicate uploads
+    IF EXISTS (SELECT 1 FROM manufacturing_csv_uploads WHERE file_name = csv_filename) THEN
+        RAISE EXCEPTION 'File "%" has already been uploaded.', csv_filename;
+    END IF;
+
+    -- Process each row
+    FOR csv_data IN SELECT * FROM jsonb_array_elements(csv_array)
+    LOOP
+        row_num := row_num + 1;
+
+        -- Skip empty rows
+        IF csv_data::TEXT = '{}' THEN
+            RAISE WARNING 'Skipped empty row %', row_num;
+            CONTINUE;
+        END IF;
+
+        BEGIN
+            -- Try insert
+            INSERT INTO intricon_data
+            SELECT *
+            FROM json_populate_record(NULL::intricon_data, csv_data::json);
+
+            inserted_count := inserted_count + 1;
+            RAISE NOTICE 'Row % inserted successfully (_id=%)', row_num, csv_data->>'_id';
+
+        EXCEPTION
+            WHEN unique_violation THEN
+                had_error := TRUE;
+                RAISE WARNING 'Duplicate row at row % (_id=%)', row_num, csv_data->>'_id';
+
+            WHEN others THEN
+                had_error := TRUE;
+                RAISE WARNING 'Error inserting row % (id=%): % | Data: %',
+                    row_num, csv_data->>'_id', SQLERRM, csv_data::TEXT;
+        END;
+    END LOOP;
+
+    -- Record file upload
+    INSERT INTO manufacturing_csv_uploads(file_name, uploaded_at, uploaded_by, version, rows_affected, uploaded_status)
+    VALUES (csv_filename, NOW(), user_email, 1, inserted_count, NOT had_error);
+
+    RAISE NOTICE 'Finished processing % rows. Inserted % rows. Status=%',
+        row_num, inserted_count, NOT had_error;
+END;
+$$;
+
+
+
+SELECT COLUMN_NAME, DATA_TYPE
+FROM INFORMATION_SCHEMA.COLUMNS
+WHERE TABLE_NAME = 'manufacturing_csv_uploads' ;
