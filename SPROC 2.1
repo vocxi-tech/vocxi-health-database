@@ -1,0 +1,79 @@
+SPROC2
+
+
+CREATE OR REPLACE PROCEDURE SPROC2(
+    csv_array JSONB,
+    csv_filename TEXT,
+    user_email TEXT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    new_pcb RECORD;
+BEGIN
+   
+    CALL SPROC1(csv_array, csv_filename, user_email);
+
+   
+    FOR new_pcb IN
+        SELECT DISTINCT pcb_id
+        FROM intricon_data
+        WHERE file_name = csv_filename
+    LOOP
+    
+        IF NOT EXISTS (
+            SELECT 1 FROM inv_master WHERE pcb_id = new_pcb.pcb_id
+        ) THEN
+            INSERT INTO inv_master (
+                pcb_id,
+                datetime_record
+            )
+            VALUES (
+                new_pcb.pcb_id,
+                NOW()
+            );
+
+            RAISE NOTICE '🆕 pcb_id inserted into inv_master: %', new_pcb.pcb_id;
+        END IF;
+
+       
+        INSERT INTO inventory_main (
+            pcb_id,
+            date_time_record,
+            updated_by
+        )
+        VALUES (
+            new_pcb.pcb_id,
+            NOW(),
+            user_email
+        )
+        ON CONFLICT (pcb_id) DO UPDATE
+        SET
+            date_time_record = EXCLUDED.date_time_record,
+            updated_by = EXCLUDED.updated_by;
+
+        RAISE NOTICE '🔄 inventory_main upserted for pcb_id: %', new_pcb.pcb_id;
+
+     
+        INSERT INTO inventory_log (
+            pcb_id,
+            board_status,
+            date,
+            changes_by_user
+            
+        )
+        VALUES (
+            new_pcb.pcb_id,
+            'CSV_UPLOAD',
+            NOW(),
+            user_email
+        );
+
+        RAISE NOTICE '📚 inv_log inserted for pcb_id: %', new_pcb.pcb_id;
+    END LOOP;
+
+    RAISE NOTICE '✅ SPROC2 completed for file: %', csv_filename;
+END;
+$$;
+
+
