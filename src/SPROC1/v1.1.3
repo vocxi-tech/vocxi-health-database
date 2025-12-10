@@ -1,0 +1,135 @@
+---- added new columns ----
+
+
+CREATE OR REPLACE PROCEDURE SPROC1(
+    csv_array JSONB,
+    csv_filename TEXT,
+    user_email TEXT
+)
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    csv_data JSONB;
+    row_num INT := 0;
+    inserted_count INT := 0;
+    had_error BOOLEAN := FALSE;
+BEGIN
+
+    RAISE NOTICE 'Received payload: %', csv_array;
+    IF EXISTS (SELECT 1 FROM manufacturing_csv_uploads WHERE file_name = csv_filename) THEN
+        RAISE NOTICE '⚠️ File "%" has already been uploaded. Skipping.', csv_filename;
+        RETURN;
+    END IF;
+
+    -- ✅ Handle nested arrays (Retool sometimes sends [[{...}]])
+    FOR csv_data IN
+        SELECT value
+        FROM jsonb_array_elements(
+            CASE
+                WHEN jsonb_typeof(csv_array->0) = 'array' THEN csv_array->0
+                ELSE csv_array
+            END
+        )
+    LOOP
+        row_num := row_num + 1;
+        BEGIN
+          
+            INSERT INTO intricon_data (
+            _id,
+            start_time,
+            end_time,
+            test_version,
+            breathe_test_result_mfg,
+            board_level_failure_reason,
+            breathe_test_result_open,
+            pcb_id,
+            device_id,
+            manuf_date,
+            fw_ver,
+            lot_number,
+            run_exception, 
+            usb_comm_failures,
+            Encryption_Key,
+            reuse_counter,
+            asy_sn,
+            board_id_mobile,
+            file_name,
+            uploaded_date_time
+            )
+            SELECT
+                t._id,
+                t.start_time,
+                t.end_time,
+                t.test_version,
+                t.breathe_test_result_mfg,
+            t.board_level_failure_reason,
+            t.breathe_test_result_open,
+                t.pcb_id,
+                t.device_id,
+                t.manuf_date,
+                t.fw_ver,
+                t.lot_number,
+                t.run_exception,
+                t.usb_comm_failures,
+                t.Encryption_Key,
+                t.reuse_counter,
+                t.asy_sn,
+                t.board_id_mobile,
+                csv_filename,
+                NOW() AT TIME ZONE 'America/Chicago'
+            FROM json_populate_record(NULL::intricon_data, csv_data::json) AS t;
+
+            inserted_count := inserted_count + 1;
+
+            RAISE NOTICE 'Row % inserted successfully (ID: %)', row_num, csv_data->>'_id';
+
+        EXCEPTION WHEN OTHERS THEN
+            had_error := TRUE;
+
+            -- ⚠️ Log the failure
+            INSERT INTO intricon_upload_errors (
+                file_name,
+                row_number,
+                error_message,
+                row_data
+            )
+            VALUES (
+                csv_filename,
+                row_num,
+                SQLERRM,
+                csv_data
+            );
+
+            RAISE WARNING 'Row % failed (ID %): %',
+                row_num, csv_data->>'_id', SQLERRM;
+        END;
+    END LOOP;
+
+    -- ✅ Log upload summary
+    INSERT INTO manufacturing_csv_uploads (
+        file_name,
+        uploaded_at,
+        uploaded_by,
+        version,
+        rows_affected,
+        uploaded_status
+    )
+    VALUES (
+        csv_filename,
+        NOW() AT TIME ZONE 'America/Chicago',
+        user_email,
+        1,
+        inserted_count,
+        (inserted_count > 0 AND NOT had_error)
+    );
+
+    RAISE NOTICE '✅ Finished % rows. Inserted: %, Errors: %',
+        row_num, inserted_count, had_error;
+
+    CALL SPROC2(
+        csv_array,
+        csv_filename,
+        user_email
+    );
+END;
+$$;
