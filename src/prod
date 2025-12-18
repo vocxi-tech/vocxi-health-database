@@ -1,0 +1,19 @@
+----prod.retool_csv_view----
+
+
+CREATE OR REPLACE VIEW prod.retool_csv_view AS
+SELECT
+  d.*,                      -- All measurement/test data
+  u.id AS upload_id,        -- Upload metadata
+  u.uploaded_at,
+  u.uploaded_by,
+  u.version,
+  u.uploaded_status,
+  u.rows_affected
+FROM
+  prod.MANUF_DATA d
+LEFT JOIN
+  prod.MANUF_UPLOAD_LOGS u
+  ON CONCAT(d.file_name, '.csv') = u.file_name
+WHERE
+  d.file_name IS NOT NULL;
